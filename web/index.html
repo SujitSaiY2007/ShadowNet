@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ShadowNet · SOC Dashboard</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M16 2 4 7v8c0 7.5 5 13 12 15 7-2 12-7.5 12-15V7z" fill="none" stroke="currentColor" stroke-width="2"/>
+        <path d="M10 16h3l2-5 3 10 2-5h3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <h1>ShadowNet</h1>
+        <p>Network Intrusion &amp; Log Forensics Engine</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span class="status" id="status"><i class="dot"></i><span id="status-text">Connecting…</span></span>
+      <button id="simulate" class="btn-primary" type="button">⚡ Simulate Attack Wave</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="kpis" aria-label="Key indicators">
+      <article class="kpi"><h2>Total Requests</h2><strong id="kpi-total">–</strong><small id="kpi-total-sub">&nbsp;</small></article>
+      <article class="kpi danger"><h2>Blocked Threats</h2><strong id="kpi-blocked">–</strong><small id="kpi-blocked-sub">&nbsp;</small></article>
+      <article class="kpi warn"><h2>Critical IPs</h2><strong id="kpi-critical">–</strong><small id="kpi-critical-sub">&nbsp;</small></article>
+      <article class="kpi accent"><h2>Peak RPS</h2><strong id="kpi-rps">–</strong><small>requests in busiest second</small></article>
+    </section>
+
+    <section class="grid">
+      <article class="panel chart-panel">
+        <div class="panel-head">
+          <h2>Traffic Timeline</h2>
+          <div class="legend">
+            <span><i class="sw normal"></i>Normal</span>
+            <span><i class="sw malicious"></i>Malicious</span>
+            <button id="scale" class="btn-ghost" type="button" title="Toggle Y-axis scale">Scale: Linear</button>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart" aria-label="Normal versus malicious requests over time"></canvas>
+          <div id="tooltip" class="tooltip" hidden></div>
+        </div>
+      </article>
+
+      <aside class="side">
+        <article class="panel">
+          <div class="panel-head"><h2>Attack Vectors</h2></div>
+          <ul id="vectors" class="bars"></ul>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h2>Top Attackers</h2></div>
+          <ul id="attackers" class="attackers"></ul>
+        </article>
+      </aside>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Threat Alerts <span id="alert-count" class="count"></span></h2>
+        <div class="filters">
+          <div id="sev-filter" class="chips" role="group" aria-label="Filter by severity"></div>
+          <select id="type-filter" aria-label="Filter by attack type"></select>
+          <input id="search" type="search" placeholder="Search IP or payload…" aria-label="Search alerts">
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Severity</th><th>Attack Type</th><th>Source IP</th>
+                <th class="num">Hits</th><th>First → Last Seen</th><th>Evidence</th></tr>
+          </thead>
+          <tbody id="alerts"></tbody>
+        </table>
+        <p id="empty" class="empty" hidden>No alerts match the current filters.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>ShadowNet · zero dependencies · Python standard library + vanilla JS · simulated data only</footer>
+  <script src="app.js"></script>
+</body>
+</html>
