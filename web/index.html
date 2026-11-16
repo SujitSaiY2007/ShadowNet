@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div class="bg" aria-hidden="true"><i></i><i></i><i></i></div>
   <header class="topbar">
     <div class="brand">
       <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
@@ -15,7 +16,7 @@
         <path d="M10 16h3l2-5 3 10 2-5h3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
       <div>
-        <h1>ShadowNet</h1>
+        <h1>ShadowNet <span id="mode" class="mode">Simulated</span></h1>
         <p>Network Intrusion &amp; Log Forensics Engine</p>
       </div>
     </div>
@@ -27,10 +28,10 @@
 
   <main>
     <section class="kpis" aria-label="Key indicators">
-      <article class="kpi"><h2>Total Requests</h2><strong id="kpi-total">–</strong><small id="kpi-total-sub">&nbsp;</small></article>
+      <article class="kpi"><h2>Total Events</h2><strong id="kpi-total">–</strong><small id="kpi-total-sub">&nbsp;</small></article>
       <article class="kpi danger"><h2>Blocked Threats</h2><strong id="kpi-blocked">–</strong><small id="kpi-blocked-sub">&nbsp;</small></article>
       <article class="kpi warn"><h2>Critical IPs</h2><strong id="kpi-critical">–</strong><small id="kpi-critical-sub">&nbsp;</small></article>
-      <article class="kpi accent"><h2>Peak RPS</h2><strong id="kpi-rps">–</strong><small>requests in busiest second</small></article>
+      <article class="kpi accent"><h2>Peak RPS</h2><strong id="kpi-rps">–</strong><small>events in busiest second</small></article>
     </section>
 
     <section class="grid">
@@ -83,7 +84,7 @@
     </section>
   </main>
 
-  <footer>ShadowNet · zero dependencies · Python standard library + vanilla JS · simulated data only</footer>
+  <footer>ShadowNet · zero dependencies · Python standard library + vanilla JS</footer>
   <script src="app.js"></script>
 </body>
 </html>

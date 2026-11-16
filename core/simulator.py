@@ -10,6 +10,8 @@ injects six hostile behaviours into the benign background traffic:
 * Obfuscated (high-entropy) query strings
 * Reconnaissance probes           (``/.env``, ``/wp-admin`` ...)
 
+It also writes an sshd ``auth.log`` containing SSH brute-force storms.
+
 Only the Python standard library is used.
 """
 
@@ -125,10 +127,49 @@ def generate_events(seed=None):
     return events
 
 
-def generate_logs(path, seed=None):
-    """Write a fresh simulated access log to *path*; return the line count."""
-    events = generate_events(seed)
+def generate_ssh_events(seed=None):
+    """Build sorted ``(datetime, line)`` tuples in sshd syslog format (ISO timestamps).
+
+    Contains routine logins, stray typos, and brute-force storms - one of which
+    ends in a *successful* login to exercise the compromise detector.
+    """
+    rng = random.Random(seed)
+    end = datetime.now(timezone.utc).replace(microsecond=0)
+    start = end - timedelta(seconds=WINDOW_SECONDS)
+    events = []
+
+    def add(offset, ok, user, ip, invalid=False):
+        ts = start + timedelta(seconds=offset)
+        verb = "Accepted" if ok else "Failed"
+        who = f"invalid user {user}" if invalid else user
+        events.append((ts, f"{ts.isoformat()} web-01 sshd[{rng.randint(900, 32000)}]: "
+                           f"{verb} password for {who} from {ip} port {rng.randint(1024, 65000)} ssh2"))
+
+    staff = ["alice", "bob", "deploy", "carol"]
+    for _ in range(40):  # routine activity, with the occasional typo
+        add(rng.uniform(0, WINDOW_SECONDS), rng.random() > 0.12, rng.choice(staff), _ip(rng, True))
+    for n in range(3):   # brute-force storms
+        ip, t0 = _ip(rng), rng.uniform(60, WINDOW_SECONDS - 200)
+        for _ in range(rng.randint(70, 120)):
+            t0 += rng.uniform(0.3, 1.2)
+            user = rng.choice(["root", "admin", "ubuntu", "pi", "oracle", "git", "test"])
+            add(t0, False, user, ip, invalid=user not in ("root", "git"))
+        if n == 0:       # ... the first one eventually guesses the password
+            add(t0 + 2, True, "root", ip)
+    events.sort(key=lambda event: event[0])
+    return events
+
+
+def _write(path, events):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(line for _, line in events) + "\n", encoding="utf-8")
     return len(events)
+
+
+def generate_logs(path, auth_path=None, seed=None):
+    """Write a simulated access log (and optional SSH auth log); return line count."""
+    total = _write(path, generate_events(seed))
+    if auth_path:
+        total += _write(auth_path, generate_ssh_events(seed))
+    return total

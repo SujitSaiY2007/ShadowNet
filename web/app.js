@@ -10,9 +10,10 @@
 
   const $ = (id) => document.getElementById(id);
   const SEVERITIES = ['critical', 'high', 'medium', 'low'];
-  const COLORS = { critical: '#ff4d6d', high: '#ff9f43', medium: '#f6d55c', low: '#5b9dff' };
-  const NORMAL = '#22d3ee';
-  const MALICIOUS = '#ff4d6d';
+  const COLORS = { critical: '#e11d48', high: '#ea580c', medium: '#ca8a04', low: '#2563eb' };
+  const NORMAL = '#4f46e5';
+  const MALICIOUS = '#e11d48';
+  const POLL_MS = 3000;    // live mode refresh interval
 
   const state = {
     report: null,
@@ -22,6 +23,8 @@
     sqrtScale: false,
     reveal: 1,               // 0..1 chart draw-in animation progress
     hover: -1,               // hovered timeline bucket
+    pulse: 0,                // 0..1 phase of the "now" marker animation
+    polling: false,
   };
 
   // ---------- helpers ----------
@@ -61,7 +64,7 @@
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       state.report = await res.json();
       render();
-      setStatus(`Engine online · analysed ${clock(Date.parse(state.report.generated_at) / 1000)}`);
+      announce();
     } catch (err) {
       setStatus(`Engine unreachable (${err.message})`, 'error');
     } finally {
@@ -69,15 +72,38 @@
     }
   }
 
+  const announce = () => setStatus(
+    `${state.report.mode === 'live' ? 'Watching live logs' : 'Engine online'} · analysed ${clock(Date.parse(state.report.generated_at) / 1000)}`);
+
+  /** Live mode: silently pick up new log lines without resetting filters. */
+  async function poll() {
+    try {
+      const next = await (await fetch('/api/report')).json();
+      if (next.generated_at === state.report.generated_at) return;
+      state.report = next;
+      render(false);
+      announce();
+    } catch (err) {
+      setStatus('Engine unreachable', 'error');
+    }
+  }
+
   // ---------- rendering ----------
-  function render() {
+  function render(animate = true) {
+    const live = state.report.mode === 'live';
+    $('mode').textContent = live ? 'Live' : 'Simulated';
+    $('mode').className = `mode ${live ? 'live' : ''}`;
+    $('mode').title = (state.report.sources || []).join('\n');
+    $('simulate').textContent = live ? '↻ Re-scan Logs' : '⚡ Simulate Attack Wave';
+    if (live && !state.polling) { state.polling = true; setInterval(poll, POLL_MS); }
+
     const { summary: s, by_type: byType, by_severity: bySev, top_attackers: top } = state.report;
 
     countUp($('kpi-total'), s.total_requests);
     countUp($('kpi-blocked'), s.blocked_threats);
     countUp($('kpi-critical'), s.critical_ips);
     countUp($('kpi-rps'), s.peak_rps);
-    $('kpi-total-sub').textContent = `${fmt(s.unique_ips)} unique source IPs`;
+    $('kpi-total-sub').textContent = `${fmt(s.unique_ips)} source IPs · ${fmt(s.ssh_events)} SSH events`;
     $('kpi-blocked-sub').textContent = `${s.threat_ratio}% of all traffic`;
     $('kpi-critical-sub').textContent = `${s.alert_count} alerts raised`;
 
@@ -126,7 +152,7 @@
     $('type-filter').value = state.type;
 
     renderTable();
-    animateChart();
+    if (animate) animateChart(); else drawChart();
   }
 
   /** Re-render the controls that mirror filter state, then the table. */
@@ -212,9 +238,9 @@
     const ticks = state.sqrtScale ? [0, 0.0625, 0.25, 0.5625, 1] : [0, 0.25, 0.5, 0.75, 1];
     ticks.forEach((f) => {
       const yy = y(f * yMax);
-      ctx.strokeStyle = '#1f2b3d'; ctx.lineWidth = 1;
+      ctx.strokeStyle = '#e6eaf3'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(PAD.left, yy + 0.5); ctx.lineTo(W - PAD.right, yy + 0.5); ctx.stroke();
-      ctx.fillStyle = '#7d8da6'; ctx.textAlign = 'right';
+      ctx.fillStyle = '#64748b'; ctx.textAlign = 'right';
       ctx.fillText(fmt(Math.round(f * yMax)), PAD.left - 8, yy);
     });
     // X labels.
@@ -233,14 +259,14 @@
     ctx.clip();
     const series = (data, color) => {
       const gradient = ctx.createLinearGradient(0, PAD.top, 0, PAD.top + plotH);
-      gradient.addColorStop(0, `${color}66`);
+      gradient.addColorStop(0, `${color}40`);
       gradient.addColorStop(1, `${color}00`);
       ctx.beginPath();
       data.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
       ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
-      ctx.shadowColor = color; ctx.shadowBlur = 8;
+      ctx.shadowColor = `${color}55`; ctx.shadowBlur = 6; ctx.shadowOffsetY = 3;
       ctx.stroke();
-      ctx.shadowBlur = 0;
+      ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
       ctx.lineTo(x(n - 1), PAD.top + plotH); ctx.lineTo(x(0), PAD.top + plotH); ctx.closePath();
       ctx.fillStyle = gradient; ctx.fill();
     };
@@ -248,17 +274,26 @@
     series(malicious, MALICIOUS);
     ctx.restore();
 
+    // Pulsing "now" marker on the newest data point.
+    if (state.reveal >= 1 && n) {
+      const px = x(n - 1), py = y(normal[n - 1]);
+      ctx.beginPath(); ctx.arc(px, py, 4 + state.pulse * 12, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(79, 70, 229, ${0.35 * (1 - state.pulse)})`; ctx.fill();
+      ctx.beginPath(); ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = NORMAL; ctx.fill();
+    }
+
     // Hover crosshair + markers.
     const tip = $('tooltip');
     if (state.hover >= 0 && state.hover < n) {
       const i = state.hover, xx = x(i);
-      ctx.strokeStyle = '#7d8da6'; ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = '#94a3b8'; ctx.setLineDash([4, 4]);
       ctx.beginPath(); ctx.moveTo(xx, PAD.top); ctx.lineTo(xx, PAD.top + plotH); ctx.stroke();
       ctx.setLineDash([]);
       [[normal[i], NORMAL], [malicious[i], MALICIOUS]].forEach(([v, color]) => {
         ctx.beginPath(); ctx.arc(xx, y(v), 4, 0, Math.PI * 2);
         ctx.fillStyle = color; ctx.fill();
-        ctx.strokeStyle = '#070b12'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke();
       });
       const t = start + i * bucket;
       tip.replaceChildren(
@@ -285,6 +320,14 @@
   });
   canvas.addEventListener('mouseleave', () => { state.hover = -1; drawChart(); });
   window.addEventListener('resize', drawChart);
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const tick = (now) => {
+      state.pulse = (now % 1800) / 1800;
+      if (state.reveal >= 1 && !document.hidden) drawChart();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
 
   // ---------- wiring ----------
   $('simulate').addEventListener('click', () => load(true));
