@@ -15,12 +15,26 @@ python run.py
 
 That single command:
 
-1. generates ~3,000 Common Log Format lines (`data/access.log`) with injected attacks,
+1. generates ~3,000 web access log lines (`data/access.log`) and an sshd log
+   (`data/auth.log`) with injected attacks,
 2. runs the detection engine and builds a JSON threat report,
 3. starts a local server at <http://localhost:8080>,
 4. opens the dashboard in your default browser.
 
-Requires **Python 3.9+**. Options: `--port 9000` to change the port, `--no-browser` to
+Requires **Python 3.9+**.
+
+### Live mode — monitor real logs
+
+```bash
+python run.py --log /var/log/nginx/access.log --auth-log /var/log/auth.log
+```
+
+Pass either flag or both. ShadowNet only *reads* these files, re-analyses them whenever
+they change, and the dashboard refreshes itself every 3 seconds. Web logs may be in
+Common or Combined Log Format (Apache/Nginx defaults); SSH logs are standard sshd
+`auth.log` / `secure` lines with classic or ISO timestamps. Only the newest 200,000
+lines of each file are analysed, and the timeline widens its buckets to fit long logs.
+ Options: `--port 9000` to change the port, `--no-browser` to
 skip opening a tab. Stop with `Ctrl+C`.
 
 ## Architecture
@@ -60,6 +74,8 @@ ShadowNet/
 |---------------------|----------|---------------------------------------------------------------------------|
 | SQL Injection       | critical | Compiled regex signatures on the URL-decoded request (`UNION SELECT`, `OR 1=1`, …) |
 | DDoS Burst          | critical | Sliding window (`collections.deque`): ≥ 30 requests from one IP in 5 s    |
+| SSH Compromise      | critical | A *successful* SSH login from an IP that was just brute-forcing            |
+| SSH Brute Force     | high     | Sliding window: ≥ 8 failed sshd logins from one IP in 60 s                |
 | Brute Force         | high     | Sliding window: ≥ 10 failed logins (401/403) from one IP in 60 s          |
 | Directory Traversal | high     | Regex signatures (`../`, `%2e%2e`, `/etc/passwd`, …), double-decoded      |
 | Obfuscated Payload  | medium   | Shannon entropy ≥ 4.5 bits/char on query strings of 40+ characters        |
@@ -86,8 +102,8 @@ Thresholds are constants at the top of `core/detector.py`.
 
 ## Notes
 
-- All data is **simulated**; ShadowNet never touches real network traffic. To analyse a
-  real CLF log, call `core.detector.analyze_file("path/to/access.log")`.
+- Without `--log` / `--auth-log`, all data is **simulated**. In live mode the
+  "Simulate" button becomes "Re-scan Logs" and nothing is ever written to your logs.
 - The server binds to `127.0.0.1` only, and the dashboard renders log-derived strings as
   text (never HTML), so attack payloads cannot execute in the browser.
 

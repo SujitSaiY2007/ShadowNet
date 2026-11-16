@@ -9,6 +9,9 @@ Three complementary detection techniques run over every parsed log line:
 3. **Sliding time windows** - per-IP ``collections.deque`` counters catch
    brute-force login storms and DDoS request floods by *rate*, not content.
 
+Both web access logs (Common/Combined Log Format) and sshd authentication logs
+(``auth.log`` / ``secure``) are supported, simulated or real.
+
 The result is a JSON-serialisable report consumed by the dashboard.
 """
 
@@ -21,11 +24,16 @@ from urllib.parse import unquote_plus
 # --- Tunable thresholds -------------------------------------------------------
 BRUTE_WINDOW, BRUTE_LIMIT = 60, 10    # failed logins per IP per 60 s
 DDOS_WINDOW, DDOS_LIMIT = 5, 30       # requests per IP per 5 s
+SSH_WINDOW, SSH_LIMIT = 60, 8         # failed SSH logins per IP per 60 s
+MAX_LINES = 200_000                   # only the newest lines of each file are analysed
+TIMELINE_POINTS = 180                 # timeline buckets widen to cover long real logs
 ENTROPY_MIN_LEN, ENTROPY_LIMIT = 40, 4.5
-BUCKET_SECONDS = 10                   # timeline resolution
+BUCKET_SECONDS = 10                   # minimum timeline resolution
 
 SEVERITY = {
     "SQL Injection": "critical",
+    "SSH Compromise": "critical",
+    "SSH Brute Force": "high",
     "DDoS Burst": "critical",
     "Brute Force": "high",
     "Directory Traversal": "high",
@@ -49,6 +57,12 @@ SIGNATURES = [
         r"/\.env|/\.git/|/wp-admin|/wp-login\.php|/phpmyadmin|/\.aws/|/server-status"
         r"|\.php\.bak|/admin\.php|/backup\.sql", re.I)),
 ]
+# sshd lines from auth.log / secure, classic ("Nov  6 10:00:00") or ISO timestamps.
+SSH_RE = re.compile(
+    r'^(?P<ts>[A-Z][a-z]{2}\s+\d+\s[\d:]{8}|\d{4}-\S+)\s+\S+\s+sshd(?:\[\d+\])?:\s+'
+    r'(?P<result>Failed|Accepted)\s+\S+\s+for\s+(?P<invalid>invalid user\s+)?(?P<user>\S+)'
+    r'\s+from\s+(?P<ip>\S+)'
+)
 LOGIN_RE = re.compile(r"^/(login|signin|wp-login\.php|admin/login)", re.I)
 
 
@@ -71,7 +85,31 @@ def parse_line(line):
     except ValueError:
         return None
     rec["status"] = int(rec["status"])
+    rec["source"] = "web"
     return rec
+
+
+def parse_ssh_line(line):
+    """Parse one sshd authentication line into the common record shape."""
+    match = SSH_RE.match(line)
+    if not match:
+        return None
+    stamp = match["ts"]
+    try:
+        if stamp[0].isdigit():
+            when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        else:  # classic syslog has no year: assume the current one, in local time
+            now = datetime.now()
+            when = datetime.strptime(f"{now.year} {stamp}", "%Y %b %d %H:%M:%S")
+            if (when - now).days >= 1:
+                when = when.replace(year=now.year - 1)
+        epoch = int(when.timestamp())
+    except ValueError:
+        return None
+    failed = match["result"] == "Failed"
+    return {"ip": match["ip"], "user": match["user"], "epoch": epoch, "method": "SSH",
+            "path": f'{match["result"]} login for {match["invalid"] or ""}{match["user"]}',
+            "status": 401 if failed else 200, "source": "ssh"}
 
 
 def _signature(rec):
@@ -89,13 +127,15 @@ def _signature(rec):
     return None
 
 
-def analyze(lines):
-    """Analyse an iterable of raw log lines and return the threat report dict."""
+def analyze(lines=(), ssh_lines=()):
+    """Analyse raw web access lines and sshd lines; return the threat report dict."""
     records = [rec for rec in map(parse_line, lines) if rec]
+    records += [rec for rec in map(parse_ssh_line, ssh_lines) if rec]
     records.sort(key=lambda rec: rec["epoch"])
     flags = [None] * len(records)                 # attack type per record, if any
     details = {}                                  # (ip, type) -> human readable evidence
     login_fail = defaultdict(deque)               # ip -> deque[(epoch, index)]
+    ssh_fail = defaultdict(deque)                 # ip -> deque[(epoch, index)]
     recent = defaultdict(deque)                   # ip -> deque[(epoch, index)]
     per_second = Counter()
 
@@ -113,6 +153,16 @@ def analyze(lines):
 
     for idx, rec in enumerate(records):
         per_second[rec["epoch"]] += 1
+        if rec["source"] == "ssh":
+            brute = (rec["ip"], "SSH Brute Force")
+            if rec["status"] == 401:
+                rate_check(ssh_fail[rec["ip"]], idx, rec, SSH_WINDOW, SSH_LIMIT,
+                           "SSH Brute Force", "failed SSH logins")
+            elif brute in details:  # a success right after a storm = likely breach
+                flags[idx] = "SSH Compromise"
+                details[(rec["ip"], "SSH Compromise")] = (
+                    0, f"Successful login as “{rec['user']}” after a brute-force attack")
+            continue
         sig = _signature(rec)
         if sig:
             flags[idx] = sig[0]
@@ -127,8 +177,9 @@ def analyze(lines):
     alerts, buckets = {}, defaultdict(lambda: [0, 0])
     start = records[0]["epoch"] if records else 0
     end = records[-1]["epoch"] if records else 0
+    bucket = max(BUCKET_SECONDS, -(-(end - start) // TIMELINE_POINTS))
     for rec, kind in zip(records, flags):
-        buckets[(rec["epoch"] - start) // BUCKET_SECONDS][1 if kind else 0] += 1
+        buckets[(rec["epoch"] - start) // bucket][1 if kind else 0] += 1
         if not kind:
             continue
         alert = alerts.setdefault((rec["ip"], kind), {
@@ -153,11 +204,12 @@ def analyze(lines):
                  key=lambda a: -a["hits"])[:8]
 
     blocked = sum(1 for kind in flags if kind)
-    n_buckets = (end - start) // BUCKET_SECONDS + 1 if records else 0
+    n_buckets = (end - start) // bucket + 1 if records else 0
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "summary": {
             "total_requests": len(records),
+            "ssh_events": sum(1 for rec in records if rec["source"] == "ssh"),
             "blocked_threats": blocked,
             "critical_ips": len({a["ip"] for a in alert_list if a["severity"] == "critical"}),
             "peak_rps": max(per_second.values(), default=0),
@@ -170,7 +222,7 @@ def analyze(lines):
         "by_type": dict(Counter(kind for kind in flags if kind).most_common()),
         "by_severity": dict(Counter(a["severity"] for a in alert_list)),
         "timeline": {
-            "bucket_seconds": BUCKET_SECONDS,
+            "bucket_seconds": bucket,
             "start": start,
             "normal": [buckets[i][0] for i in range(n_buckets)],
             "malicious": [buckets[i][1] for i in range(n_buckets)],
@@ -180,7 +232,14 @@ def analyze(lines):
     }
 
 
-def analyze_file(path):
-    """Read the log file at *path* and return its threat report."""
+def _tail(path):
+    """Return the newest ``MAX_LINES`` lines of *path* (empty if no path given)."""
+    if not path:
+        return ()
     with open(path, encoding="utf-8", errors="replace") as handle:
-        return analyze(handle)
+        return deque(handle, maxlen=MAX_LINES)
+
+
+def analyze_file(path=None, auth_path=None):
+    """Analyse a web access log and/or an sshd auth log; return the threat report."""
+    return analyze(_tail(path), _tail(auth_path))

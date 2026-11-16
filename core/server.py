@@ -5,6 +5,7 @@ Routes
 ``GET  /``              static dashboard files from ``web/``
 ``GET  /api/report``    latest threat report as JSON
 ``POST /api/simulate``  generate a new attack wave, re-analyse, return the report
+                        (in live mode: just re-analyse the real logs)
 """
 
 import json
@@ -18,21 +19,49 @@ from . import detector, simulator
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
 LOG_FILE = ROOT / "data" / "access.log"
+AUTH_FILE = ROOT / "data" / "auth.log"
 
 
 class Engine:
-    """Thread-safe holder of the simulate -> detect pipeline and its last report."""
+    """Thread-safe pipeline holder.
 
-    def __init__(self, log_file=LOG_FILE):
-        self.log_file = Path(log_file)
+    * **Simulated mode** (default): ``refresh()`` regenerates sample logs.
+    * **Live mode** (real log paths given): files are never written; they are
+      re-analysed whenever they change on disk, so the dashboard tracks them.
+    """
+
+    def __init__(self, access_log=None, auth_log=None):
+        self.live = bool(access_log or auth_log)
+        self.access_log = Path(access_log) if access_log else (None if self.live else LOG_FILE)
+        self.auth_log = Path(auth_log) if auth_log else (None if self.live else AUTH_FILE)
         self._lock = threading.Lock()
+        self._stamp = None
         self.report = {}
 
+    def _fingerprint(self):
+        """(mtime, size) of every source file - changes when new lines arrive."""
+        stats = [p.stat() for p in (self.access_log, self.auth_log) if p and p.exists()]
+        return [(s.st_mtime_ns, s.st_size) for s in stats]
+
+    def _analyze(self):
+        self.report = detector.analyze_file(self.access_log, self.auth_log)
+        self.report["mode"] = "live" if self.live else "simulated"
+        self.report["sources"] = [str(p) for p in (self.access_log, self.auth_log) if p]
+        self._stamp = self._fingerprint()
+        return self.report
+
     def refresh(self, seed=None):
-        """Regenerate the log file, run detection and cache the new report."""
+        """Simulated mode: generate a new attack wave. Then (re)run detection."""
         with self._lock:
-            simulator.generate_logs(self.log_file, seed)
-            self.report = detector.analyze_file(self.log_file)
+            if not self.live:
+                simulator.generate_logs(self.access_log, self.auth_log, seed)
+            return self._analyze()
+
+    def current(self):
+        """Latest report; in live mode, re-analyse first if the logs changed."""
+        with self._lock:
+            if self.live and self._fingerprint() != self._stamp:
+                self._analyze()
             return self.report
 
 
@@ -58,7 +87,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         route = self.path.split("?")[0]
         if route == "/api/report":
-            self._json(self.engine.report)
+            self._json(self.engine.current())
         elif route.startswith("/api/"):
             self._json({"error": "not found"}, 404)
         else:
